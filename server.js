@@ -14,6 +14,7 @@ const app = express();
 app.set("trust proxy", 1);
 
 // Middleware
+app.use("/api/orders/webhook", express.raw({ type: "application/json" }));
 app.use(express.json());
 app.use(cookieParser());
 
@@ -62,7 +63,7 @@ app.use("/api/orders", require("./routes/orders.route"));
 app.use("/api/newsletter", require("./routes/newsletter.route"));
 
 const PORT = process.env.PORT || 5000;
-const path = require("path");
+
 
 app.use(errorHandler);
 

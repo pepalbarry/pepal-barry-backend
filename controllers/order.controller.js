@@ -1,33 +1,93 @@
 const crypto = require("crypto");
 const Order = require("../models/order.model");
 const User = require("../models/user.model");
+const Product = require("../models/product.model");
 const razorpay = require("../config/razorpay");
 
-const buildProductsPayload = (products = []) =>
-  products.map((item) => ({
-    productId: item.productId,
-    quantity: Math.max(1, Number(item.quantity) || 1),
-  }));
+const MAX_QUANTITY_PER_ITEM = 10;
+
+const getEffectivePrice = (product) => {
+  if (product.discountPrice && product.discountPrice > 0) {
+    return product.discountPrice;
+  }
+  if (product.discountPercent && product.discountPercent > 0) {
+    return product.price - (product.price * product.discountPercent) / 100;
+  }
+  return product.price;
+};
 
 const createCODOrder = async (req, res) => {
   try {
-    const { products, totalAmount, address } = req.body;
-    if (!products?.length || !totalAmount || !address) {
+    const { products, address } = req.body;
+    if (!products?.length || !address) {
       return res
         .status(400)
         .json({ success: false, message: "Invalid order payload" });
     }
 
+    let calculatedTotalAmount = 0;
+    const finalProducts = [];
+    for (const item of products) {
+      const product = await Product.findById(item.productId);
+      if (!product) {
+        return res
+          .status(400)
+          .json({ success: false, message: "One or more products not found" });
+      }
+      const qty = Math.min(
+        MAX_QUANTITY_PER_ITEM,
+        Math.max(1, Number(item.quantity) || 1)
+      );
+      if (product.stock < qty) {
+        return res.status(400).json({
+          success: false,
+          message:
+            product.stock <= 0
+              ? `"${product.name}" is currently out of stock`
+              : `"${product.name}" has only ${product.stock} item(s) in stock`,
+        });
+      }
+      const effectivePrice = getEffectivePrice(product);
+      calculatedTotalAmount += effectivePrice * qty;
+      finalProducts.push({
+        productId: item.productId,
+        quantity: qty,
+        priceAtPurchase: effectivePrice,
+      });
+    }
+
+    if (calculatedTotalAmount === 0) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid products in order" });
+    }
+
+    if (
+      req.body.totalAmount !== undefined &&
+      calculatedTotalAmount !== Number(req.body.totalAmount)
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Total amount mismatch. Order rejected.",
+      });
+    }
+
+    // Decrement stock for each product
+    for (const item of finalProducts) {
+      await Product.findByIdAndUpdate(item.productId, {
+        $inc: { stock: -item.quantity },
+      });
+    }
+
     let order = await Order.create({
       user: req.user.userId,
-      products: buildProductsPayload(products),
-      totalAmount,
+      products: finalProducts,
+      totalAmount: calculatedTotalAmount,
       shippingAddress: address,
       mode: "Cash On Delivery",
     });
 
     order = await order.populate("products.productId");
-
 
 
     res.status(201).json({ success: true, order });
@@ -39,14 +99,68 @@ const createCODOrder = async (req, res) => {
 
 const createRazorpayOrder = async (req, res) => {
   try {
-    const { products, totalAmount, address } = req.body;
-    if (!products?.length || !totalAmount || !address) {
+    const { products, address } = req.body;
+    if (!products?.length || !address) {
       return res
         .status(400)
         .json({ success: false, message: "Invalid order payload" });
     }
 
-    const amountInPaise = Math.round(totalAmount * 100);
+    let calculatedTotalAmount = 0;
+    const finalProducts = [];
+    for (const item of products) {
+      const product = await Product.findById(item.productId);
+      if (!product) {
+        return res
+          .status(400)
+          .json({ success: false, message: "One or more products not found" });
+      }
+      const qty = Math.min(
+        MAX_QUANTITY_PER_ITEM,
+        Math.max(1, Number(item.quantity) || 1)
+      );
+      if (product.stock < qty) {
+        return res.status(400).json({
+          success: false,
+          message:
+            product.stock <= 0
+              ? `"${product.name}" is currently out of stock`
+              : `"${product.name}" has only ${product.stock} item(s) in stock`,
+        });
+      }
+      const effectivePrice = getEffectivePrice(product);
+      calculatedTotalAmount += effectivePrice * qty;
+      finalProducts.push({
+        productId: item.productId,
+        quantity: qty,
+        priceAtPurchase: effectivePrice,
+      });
+    }
+
+    if (calculatedTotalAmount === 0) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid products in order" });
+    }
+
+    if (
+      req.body.totalAmount !== undefined &&
+      calculatedTotalAmount !== Number(req.body.totalAmount)
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Total amount mismatch. Order rejected.",
+      });
+    }
+
+    // Decrement stock for each product
+    for (const item of finalProducts) {
+      await Product.findByIdAndUpdate(item.productId, {
+        $inc: { stock: -item.quantity },
+      });
+    }
+
+    const amountInPaise = Math.round(calculatedTotalAmount * 100);
     const isDemoMode =
       !process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET;
 
@@ -62,18 +176,21 @@ const createRazorpayOrder = async (req, res) => {
         currency: "INR",
         receipt: `pepalbarry_${Date.now()}`,
       });
+    } else {
+      console.warn(
+        "WARNING: Razorpay keys missing. Running payment in demo mode."
+      );
     }
 
     const order = await Order.create({
       user: req.user.userId,
-      products: buildProductsPayload(products),
-      totalAmount,
+      products: finalProducts,
+      totalAmount: calculatedTotalAmount,
       shippingAddress: address,
       razorpayOrderId: razorpayOrder.id,
       paymentStatus: "pending",
       mode: "Razorpay",
     });
-
 
 
     res.status(201).json({
@@ -115,8 +232,13 @@ const verifyRazorpayPayment = async (req, res) => {
       }
     }
 
+    const query = { _id: orderId, razorpayOrderId: razorpay_order_id };
+    if (req.user.role !== "admin") {
+      query.user = req.user.userId;
+    }
+
     const order = await Order.findOneAndUpdate(
-      { _id: orderId, razorpayOrderId: razorpay_order_id },
+      query,
       {
         paymentStatus: "paid",
         razorpayPaymentId: razorpay_payment_id,
@@ -157,16 +279,32 @@ const getUserOrders = async (req, res) => {
 
 const getAllOrders = async (req, res) => {
   try {
-    const orders = await Order.find({
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const skip = (page - 1) * limit;
+
+    const query = {
       $or: [
         { mode: "Cash On Delivery" },
         { mode: "Razorpay", paymentStatus: "paid" },
       ],
-    })
+    };
+
+    if (req.query.status) query.deliveryStatus = req.query.status;
+    if (req.query.paymentStatus) query.paymentStatus = req.query.paymentStatus;
+    if (req.query.q && req.query.q.length === 24) {
+      query._id = req.query.q;
+    }
+
+    const total = await Order.countDocuments(query);
+    const orders = await Order.find(query)
       .populate("products.productId")
       .populate("user", "name email")
-      .sort({ createdAt: -1 });
-    res.status(200).json({ success: true, orders });
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit);
+
+    res.status(200).json({ success: true, orders, page, totalPages: Math.ceil(total/limit), total });
   } catch (error) {
     console.error("Fetching all orders failed", error);
     res.status(500).json({ success: false, message: "Server error" });
@@ -180,6 +318,18 @@ const updateOrderStatus = async (req, res) => {
 
     if (status) updateData.deliveryStatus = status;
     if (paymentStatus) updateData.paymentStatus = paymentStatus;
+
+    // If cancelling, restore stock before updating
+    if (status === "Cancelled") {
+      const existingOrder = await Order.findById(req.params.id);
+      if (existingOrder && existingOrder.deliveryStatus !== "Cancelled") {
+        for (const item of existingOrder.products) {
+          await Product.findByIdAndUpdate(item.productId, {
+            $inc: { stock: item.quantity },
+          });
+        }
+      }
+    }
 
     const order = await Order.findByIdAndUpdate(
       req.params.id,
@@ -200,18 +350,25 @@ const updateOrderStatus = async (req, res) => {
 
 const handleRazorpayWebhook = async (req, res) => {
   try {
-    const secret = process.env.RAZORPAY_WEBHOOK_SECRET || "webhook_secret";
-    const signature = req.headers["x-razorpay-signature"];
+    const secret = process.env.RAZORPAY_WEBHOOK_SECRET;
+    if (!secret) {
+      console.error("RAZORPAY_WEBHOOK_SECRET is not configured");
+      return res
+        .status(500)
+        .json({ success: false, message: "Webhook not configured" });
+    }
 
+    const signature = req.headers["x-razorpay-signature"];
     if (!signature) {
       return res
         .status(400)
         .json({ success: false, message: "Missing signature" });
     }
 
+    // req.body is a raw Buffer from express.raw() — use it directly for HMAC
     const generatedSignature = crypto
       .createHmac("sha256", secret)
-      .update(JSON.stringify(req.body))
+      .update(req.body)
       .digest("hex");
 
     if (generatedSignature !== signature) {
@@ -220,7 +377,8 @@ const handleRazorpayWebhook = async (req, res) => {
         .json({ success: false, message: "Invalid signature" });
     }
 
-    const event = req.body;
+    // Parse the raw Buffer into a JSON object
+    const event = JSON.parse(req.body.toString());
 
     if (event.event === "payment.captured") {
       const { order_id, id: payment_id } = event.payload.payment.entity;

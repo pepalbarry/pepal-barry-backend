@@ -28,17 +28,19 @@ const register = async (req, res) => {
 
     const token = jwt.sign(
       { userId: createdUser._id, email: createdUser.email },
-      process.env.JWT_SECRET
+      process.env.JWT_SECRET,
+      { expiresIn: "7d" }
     );
 
     res.cookie("token", token, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
       sameSite: "lax",
-      maxAge: 24 * 60 * 60 * 1000, // 1 day
+      maxAge: 14 * 24 * 60 * 60 * 1000, // 14 days
     });
 
-    res.status(200).json({ success: true, message: "User registered successfully", user: createdUser });
+    const { password: _, ...userWithoutPassword } = createdUser.toObject();
+    res.status(200).json({ success: true, user: userWithoutPassword });
   } catch (error) {
     console.error("Registration error:", error);
     res.status(500).json({ success: false, message: "Internal server error" });
@@ -65,17 +67,19 @@ const login = async (req, res) => {
 
     const token = jwt.sign(
       { userId: user._id, email: user.email },
-      process.env.JWT_SECRET
+      process.env.JWT_SECRET,
+      { expiresIn: "7d" }
     );
 
     res.cookie("token", token, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
       sameSite: "lax",
-      maxAge: 24 * 60 * 60 * 1000, // 1 day
+      maxAge: 14 * 24 * 60 * 60 * 1000, // 14 days
     });
 
-    res.status(200).json({ success: true, message: "User logged in successfully", user });
+    const { password: _, ...userWithoutPassword } = user.toObject();
+    res.status(200).json({ success: true, user: userWithoutPassword });
   } catch (error) {
     console.error("Login error:", error);
     res.status(500).json({ success: false, message: "Internal server error" });
@@ -121,17 +125,19 @@ const googleLogin = async (req, res) => {
 
     const token = jwt.sign(
       { userId: user._id, email: user.email },
-      process.env.JWT_SECRET
+      process.env.JWT_SECRET,
+      { expiresIn: "7d" }
     );
 
     res.cookie("token", token, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
       sameSite: "lax",
-      maxAge: 24 * 60 * 60 * 1000, // 1 day
+      maxAge: 14 * 24 * 60 * 60 * 1000, // 14 days
     });
 
-    res.status(200).json({ success: true, message: "Logged in with Google", user });
+    const { password: _, ...userWithoutPassword } = user.toObject();
+    res.status(200).json({ success: true, user: userWithoutPassword });
   } catch (err) {
     console.error("Google login error:", err);
     res.status(500).json({ success: false, message: "Google login failed" });
@@ -139,7 +145,11 @@ const googleLogin = async (req, res) => {
 };
 
 const logoutUser = (req, res) => {
-  res.clearCookie("token");
+  res.clearCookie("token", {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+  });
   res.status(200).json({ success: true, message: "Logged out successfully" });
 };
 

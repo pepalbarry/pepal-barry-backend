@@ -4,13 +4,25 @@ const { uploadToCloudinary, deleteFromCloudinary } = require("../utils/uploadUti
 
 const getAllProducts = async (req, res) => {
   try {
-    const products = await Product.find({});
-    res.status(200).json({ success: true, products });
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const skip = (page - 1) * limit;
+
+    const query = {};
+    if (req.query.category) query.category = req.query.category;
+    if (req.query.q) {
+      const escaped = req.query.q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      query.name = { $regex: escaped, $options: "i" };
+    }
+
+    const total = await Product.countDocuments(query);
+    const products = await Product.find(query).skip(skip).limit(limit);
+
+    res.status(200).json({ success: true, products, page, totalPages: Math.ceil(total/limit), total });
   } catch (error) {
     console.log("Error in fetching products: ", error);
     res.status(500).json({ success: false, message: "Server error" });
   }
-
 }
 
 const getProductById = async (req, res) => {
@@ -28,7 +40,14 @@ const getProductById = async (req, res) => {
 
 const createProduct = async (req, res) => {
   try {
-    const { name, description, price, stock, category } = req.body;
+    const { name, description, price, stock, category, discountPercent, discountPrice } = req.body;
+
+    let dPercent = discountPercent ? Number(discountPercent) : 0;
+    let dPrice = discountPrice ? Number(discountPrice) : 0;
+    
+    if (dPrice > 0 && dPrice >= Number(price)) {
+      return res.status(400).json({ success: false, message: "Discount price must be less than the original price" });
+    }
 
     let images = [];
     if (req.files && req.files.length > 0) {
@@ -40,6 +59,8 @@ const createProduct = async (req, res) => {
       name,
       description,
       price,
+      discountPercent: dPercent,
+      discountPrice: dPrice,
       stock,
       category,
       images,
@@ -54,8 +75,16 @@ const createProduct = async (req, res) => {
 
 const updateProduct = async (req, res) => {
   try {
-    const { name, description, price, stock, category } = req.body;
-    const updateData = { name, description, price, stock, category };
+    const { name, description, price, stock, category, discountPercent, discountPrice } = req.body;
+    
+    let dPercent = discountPercent ? Number(discountPercent) : 0;
+    let dPrice = discountPrice ? Number(discountPrice) : 0;
+
+    if (dPrice > 0 && dPrice >= Number(price)) {
+      return res.status(400).json({ success: false, message: "Discount price must be less than the original price" });
+    }
+
+    const updateData = { name, description, price, stock, category, discountPercent: dPercent, discountPrice: dPrice };
 
     if (req.files && req.files.length > 0) {
       const uploadPromises = req.files.map((file) => uploadToCloudinary(file.buffer));
@@ -94,6 +123,7 @@ const deleteProduct = async (req, res) => {
     if (product.images && product.images.length > 0) {
       product.images.forEach((img) => deleteFromCloudinary(img));
     }
+
     res.status(200).json({ success: true, message: "Product deleted" });
   } catch (error) {
     console.error("Error deleting product:", error);
